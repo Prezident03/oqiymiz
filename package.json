@@ -1,0 +1,13 @@
+{
+  "name": "alifbo",
+  "private": true,
+  "description": "Alifbo — 1-sinf Alifbe darsligi asosida o'qishni o'rganish va ravon o'qish platformasi",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tekshir": "node scripts/tekshir.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

@@ -52,6 +52,10 @@ export default {
 
     const KEY = cleanKey(env.AISHA_API_KEY || env.VOICELAB_API_KEY);
 
+    // Telegram bot: webhook va bir martalik sozlash
+    if (url.pathname === "/tg/webhook" && request.method === "POST") return tgWebhook(request, env, url);
+    if (url.pathname === "/tg/setup") return tgSetup(env, url);
+
     if (url.pathname === "/check") {
       const raw = String(env.AISHA_API_KEY || env.VOICELAB_API_KEY || "");
       let out = !raw ? "❌ AISHA_API_KEY kiritilmagan\n" :
@@ -118,3 +122,64 @@ function err(status, msg) {
   return new Response(msg, { status, headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" } });
 }
 
+
+/* ---------- TELEGRAM BOT ----------
+   Cloudflare → Variables and Secrets:
+     TELEGRAM_BOT_TOKEN  — @BotFather bergan token (Secret)
+     TG_WEBHOOK_SECRET   — o'zingiz o'ylab topgan maxfiy so'z, faqat harf/raqam/_/- (Secret)
+   Keyin bir marta brauzerda oching: https://<sayt>/tg/setup?key=<TG_WEBHOOK_SECRET>
+*/
+async function tg(env, method, body) {
+  const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}),
+  });
+  return r.json().catch(() => ({ ok: false, description: "HTTP " + r.status }));
+}
+
+const appButton = url => ({ inline_keyboard: [[{ text: "🔤 Alifboni ochish", web_app: { url: url.origin + "/" } }]] });
+
+async function tgWebhook(request, env, url) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TG_WEBHOOK_SECRET ||
+      request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.TG_WEBHOOK_SECRET)
+    return new Response("forbidden", { status: 403 });
+  let u = {}; try { u = await request.json(); } catch (e) {}
+  const m = u.message;
+  if (m && m.chat) {
+    const t = String(m.text || "").trim();
+    const name = (m.from && m.from.first_name) || "do'stim";
+    let text;
+    if (/^\/start\b/.test(t)) text =
+      `Salom, ${name}! 👋\n\n<b>Alifbo</b> — harfma-harf o'qishni o'rganish platformasi.\n\n` +
+      `🔤 <b>Alifbo</b> — 30 ta dars, 1-sinf "Alifbe" darsligi tartibida\n` +
+      `🚀 <b>Ravon o'qish</b> — qo'shib o'qish, piramida, hikoyalar va tez o'qish\n\n` +
+      `Boshlash uchun pastdagi tugmani bosing 👇`;
+    else if (/^\/help\b/.test(t)) text =
+      `ℹ️ Ilovani ochish uchun pastdagi tugmani yoki chap pastdagi <b>Alifbo</b> menyu tugmasini bosing.\n\n` +
+      `Natijalar (tangalar, yulduzlar) Telegram hisobingizda saqlanadi — boshqa telefondan ochsangiz ham yo'qolmaydi.`;
+    else text = `O'qishni boshlash uchun tugmani bosing 👇`;
+    await tg(env, "sendMessage", { chat_id: m.chat.id, text, parse_mode: "HTML", reply_markup: appButton(url) });
+  }
+  return new Response("ok");
+}
+
+async function tgSetup(env, url) {
+  const txt = s => new Response(s, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  if (!env.TELEGRAM_BOT_TOKEN) return txt("❌ TELEGRAM_BOT_TOKEN kiritilmagan");
+  if (!env.TG_WEBHOOK_SECRET) return txt("❌ TG_WEBHOOK_SECRET kiritilmagan");
+  if (url.searchParams.get("key") !== env.TG_WEBHOOK_SECRET) return txt("❌ ?key=... noto'g'ri");
+  if (url.protocol !== "https:") return txt("❌ Telegram faqat https manzilni qabul qiladi");
+  const res = [];
+  const step = async (name, method, body) => { const r = await tg(env, method, body);
+    res.push(`${r.ok ? "✅" : "❌"} ${name}${r.ok ? "" : " — " + r.description}`); return r; };
+  const me = await step("Bot tokeni", "getMe");
+  await step("Webhook", "setWebhook", { url: url.origin + "/tg/webhook", secret_token: env.TG_WEBHOOK_SECRET,
+    allowed_updates: ["message"], drop_pending_updates: true });
+  await step("Menyu tugmasi", "setChatMenuButton", { menu_button: { type: "web_app", text: "Alifbo", web_app: { url: url.origin + "/" } } });
+  await step("Buyruqlar", "setMyCommands", { commands: [
+    { command: "start", description: "Ilovani ochish" }, { command: "help", description: "Yordam" }] });
+  await step("Tavsif", "setMyDescription", { description:
+    "Alifbo — 1-sinf \"Alifbe\" darsligi asosida harfma-harf o'qishni o'rganish va ravon o'qish platformasi. O'zbekcha AI ovoz bilan." });
+  await step("Qisqa tavsif", "setMyShortDescription", { short_description: "Bolalar uchun o'qishni o'rganish platformasi 🔤" });
+  if (me.ok) res.push(`\nBot: https://t.me/${me.result.username}\nMini App manzili: ${url.origin}/`);
+  return txt(res.join("\n"));
+}

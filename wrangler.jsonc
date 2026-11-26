@@ -8,7 +8,9 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     // Bu manzillar avval server (worker) ga boradi, aks holda brauzer ularni ochganda bosh sahifa chiqadi
-    "run_worker_first": ["/tg/*", "/tts", "/check"]
+    "run_worker_first": ["/tg/*", "/tts", "/stt", "/check"]
   },
+  // Cloudflare Workers AI — Telegram ichida mikrofon uchun nutqni tanish (Whisper)
+  "ai": { "binding": "AI" },
   "observability": { "enabled": true }
 }

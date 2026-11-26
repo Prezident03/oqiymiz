@@ -55,6 +55,7 @@ export default {
     // Telegram bot: webhook va bir martalik sozlash
     if (url.pathname === "/tg/webhook" && request.method === "POST") return tgWebhook(request, env, url);
     if (url.pathname === "/tg/setup") return tgSetup(env, url);
+    if (url.pathname === "/stt") return stt(request, env);
 
     if (url.pathname === "/check") {
       const raw = String(env.AISHA_API_KEY || env.VOICELAB_API_KEY || "");
@@ -122,6 +123,26 @@ function err(status, msg) {
   return new Response(msg, { status, headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" } });
 }
 
+
+/* ---------- NUTQNI TANISH (Telegram ichida brauzer mikrofoni ishlamaganda) ----------
+   Brauzer ovozni yozib yuboradi, Cloudflare Workers AI (Whisper) matnga aylantiradi. */
+async function stt(request, env) {
+  const J = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...CORS, "Content-Type": "application/json" } });
+  if (request.method !== "POST") return J({ error: "POST kerak" }, 405);
+  if (!env.AI) return J({ error: "AI ulanmagan" }, 500);
+  const buf = await request.arrayBuffer();
+  if (buf.byteLength < 500) return J({ text: "" });
+  if (buf.byteLength > 3_000_000) return J({ error: "juda katta" }, 413);
+  const bytes = new Uint8Array(buf); let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  try {
+    const r = await env.AI.run("@cf/openai/whisper-large-v3-turbo", {
+      audio: btoa(bin), language: "uz", task: "transcribe",
+      initial_prompt: "Bolalar o'zbek tilida so'z va gaplarni o'qiydi.",
+    });
+    return J({ text: String((r && r.text) || "").trim() });
+  } catch (e) { return J({ error: String(e.message || e) }, 502); }
+}
 
 /* ---------- TELEGRAM BOT ----------
    Cloudflare → Variables and Secrets:

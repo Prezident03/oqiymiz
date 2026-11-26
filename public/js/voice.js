@@ -52,9 +52,13 @@ function matches(heard,target){ const h=norm(heard), t=norm(plain(target)); if(!
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const inClaude=!!(window.claude&&window.claude.use);
 let dict=null;
-function micAvailable(){ return !!((SR&&!inClaude)||dict); }
+/* Telegram ichida (yoki brauzerda nutqni tanish yo'q bo'lsa) — ovoz yozilib, serverda taniladi */
+function useServerSTT(){ const inTg=!!(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData);
+  return ON_SERVER && !!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder) && (inTg||!SR); }
+function micAvailable(){ return !!(useServerSTT()||(SR&&!inClaude)||dict); }
 /* listen(onText, opts) -> stop(). continuous: uzluksiz tinglash (Tez o'qish uchun) */
 function listen(onText,onEnd,continuous=false){
+  if(useServerSTT()) return serverListen(onText,onEnd,continuous);
   if(SR && !inClaude){
     let stopped=false; const r=new SR(); r.lang="uz-UZ"; r.interimResults=true; r.maxAlternatives=3; r.continuous=continuous;
     r.onresult=e=>{ for(let i=e.resultIndex;i<e.results.length;i++){ let j=0; for(const alt of e.results[i]) onText(alt.transcript,e.results[i].isFinal,i,j++); } };
@@ -68,6 +72,44 @@ function listen(onText,onEnd,continuous=false){
 }
 let dictHandler=null;
 
+/* Ovozni yozish: gapirib bo'lgach (jimlik) bo'lakni serverga yuboradi */
+function serverListen(onText,onEnd,continuous){
+  let stopped=false, stream=null, ac=null, rec=null, seg=0, pending=0, raf=null;
+  const finish=why=>{ if(stopped) return; stopped=true; cancelAnimationFrame(raf);
+    try{ rec&&rec.state!=="inactive"&&rec.stop(); }catch(e){}
+    setTimeout(()=>{ try{ stream&&stream.getTracks().forEach(t=>t.stop()); ac&&ac.close(); }catch(e){} },50);
+    if(why) onEnd&&onEnd(why); };
+  const send=async(blob,idx)=>{ pending++;
+    try{ const r=await fetch(location.origin+"/stt",{method:"POST",headers:{"Content-Type":blob.type||"audio/webm"},body:blob});
+      const j=await r.json(); if(j.text) onText(j.text,true,idx,0); }catch(e){}
+    pending--; if(!continuous) onEnd&&onEnd("end"); };
+  (async()=>{
+    try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}); }
+    catch(e){ stopped=true; onEnd&&onEnd(e&&e.name==="NotAllowedError"?"denied":"err"); return; }
+    if(stopped){ stream.getTracks().forEach(t=>t.stop()); return; }
+    ac=new (window.AudioContext||window.webkitAudioContext)(); const an=ac.createAnalyser(); an.fftSize=1024;
+    ac.createMediaStreamSource(stream).connect(an); const buf=new Float32Array(an.fftSize);
+    const startSeg=()=>{ if(stopped&&continuous) return;
+      const chunks=[], idx=seg++, t0=performance.now(); let voiced=false, lastVoice=t0;
+      rec=new MediaRecorder(stream); rec.ondataavailable=e=>e.data.size&&chunks.push(e.data);
+      rec.onstop=()=>{ const had=voiced; if(had&&chunks.length) send(new Blob(chunks,{type:rec.mimeType||chunks[0].type}),idx);
+        else if(!continuous) onEnd&&onEnd("end");
+        if(continuous&&!stopped) startSeg(); };
+      rec.start();
+      const tick=()=>{ if(rec.state==="inactive") return; an.getFloatTimeDomainData(buf);
+        let sum=0; for(const v of buf) sum+=v*v; const rms=Math.sqrt(sum/buf.length), now=performance.now();
+        if(rms>0.02){ voiced=true; lastVoice=now; }
+        const segMax=continuous?4500:6000, quiet=continuous?650:900;
+        if((voiced&&now-lastVoice>quiet)||now-t0>segMax){ try{rec.stop()}catch(e){}
+          if(!continuous){ stopped=true; setTimeout(()=>{ try{ stream.getTracks().forEach(t=>t.stop()); ac.close(); }catch(e){} },50); }
+          return; }
+        raf=requestAnimationFrame(tick); };
+      tick(); };
+    startSeg();
+  })();
+  return ()=>finish(null);
+}
+
 /* Bitta so'z/gap uchun mikrofon tugmasi */
 function micTry(btn,target,onOk,hintEl,heardEl){
   let stop=null, timer=null, done=false, last="";
@@ -78,7 +120,7 @@ function micTry(btn,target,onOk,hintEl,heardEl){
     stop=listen((t)=>{ if(done) return; if(t){ last=t; heardEl.textContent=`Eshitdim: "${t}"`; }
         if(matches(t,target)){ end(""); onOk(btn); } },
       (why)=>{ if(why==="denied") end("Mikrofonga ruxsat bering 🎙️"); else if(why==="end") setTimeout(()=>{ if(!done){ ding(false); end(last?"Unday emas — yana urinib ko'r! 💪":"Eshitmadim. Balandroq gapir 🎙️"); } },350); });
-    timer=setTimeout(()=>{ if(!done){ ding(false); end(last?"Unday emas — 🔊 tingla va yana ayt":"Eshitmadim. Balandroq gapir 🎙️"); } },7000);
+    timer=setTimeout(()=>{ if(!done){ ding(false); end(last?"Unday emas — 🔊 tingla va yana ayt":"Eshitmadim. Balandroq gapir 🎙️"); } },useServerSTT()?11000:7000);
   };
   return ()=>end();
 }
